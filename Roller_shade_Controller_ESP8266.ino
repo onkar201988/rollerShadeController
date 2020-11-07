@@ -181,6 +181,20 @@ void sensorA_ISR()
 void sensorB_ISR()
 {
   nextPositionCountB --;
+
+  if(UP == motorDirectionB)
+  {
+    masterCountB--;
+  }
+  else if(DOWN == motorDirectionB)
+  {
+    masterCount+B+;
+  }
+  else
+  {
+    //Do nothing
+  }
+  nextPositionCountB --;
   if (0 == nextPositionCountB)
   {
     masterStateB = IDEL_ST;
@@ -211,7 +225,22 @@ void limitSwA_ISR()
 //-------------------------------------------------------------------
 void limitSwB_ISR()
 {
-  isLimitReachedB = true;
+  if(!digitalRead(limitSwBPin))
+  {
+    #ifdef debug
+      Serial.println("Limit SW B ISR: Limit SW pressed");
+    #endif
+    
+    stopShadeB();  // Hard stop motor in any case
+    isLimitReachedB = true;
+    nextPositionCountB = 5;
+    shadeDownB();
+    masterCountB = 0;
+  }
+  else if(DONE == calibrationStateB)
+  {
+    isLimitReachedB = false;
+  }
 }
 
 //-------------------------------------------------------------------
@@ -309,6 +338,7 @@ void stopShadeA()
 void shadeUpB()
 {
   // Set motor direction
+  motorDirectionB = UP;
   digitalWrite(BIN1Pin, HIGH);
   digitalWrite(BIN2Pin, LOW);
 }
@@ -317,6 +347,7 @@ void shadeUpB()
 void shadeDownB()
 {
   // Set motor direction
+  motorDirectionB = DOWN;
   digitalWrite(BIN1Pin, LOW);
   digitalWrite(BIN2Pin, HIGH);
 }
@@ -325,6 +356,7 @@ void shadeDownB()
 void stopShadeB()
 {
   // Set motor direction
+  motorDirectionB = STOP;
   digitalWrite(BIN1Pin, LOW);
   digitalWrite(BIN2Pin, LOW);
 }
@@ -380,7 +412,6 @@ void callback(char* topic, byte* payload, unsigned int length)
   
   // Map the value from % to no. steps
   int nextPositionCount = map(blindPosition, 0, 100, 0, maxStepsA);
-  //nextPositionCountB = map(blindPosition, 0, 100, 0, maxStepsB);
 
   // Set state for Motor A
   setNextPositionA(nextPositionCount);
@@ -389,11 +420,13 @@ void callback(char* topic, byte* payload, unsigned int length)
   setNextPositionB(nextPositionCount);
 }
 
+//-----------------------------------------------------------------------------
 void sendShadeStatus()
 {
   // Send the current state of the blind in %
   client.publish(mqtt_topic_state, String((int)(((float)masterCountA / (float)maxStepsA)*100)).c_str());
 }
+
 //-----------------------------------------------------------------------------
 void setNextPositionA(int nextPosition)
 {  
