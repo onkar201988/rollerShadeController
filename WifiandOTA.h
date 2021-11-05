@@ -1,5 +1,6 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <ESP_EEPROM.h>
 #include <ArduinoOTA.h>
 extern "C" {
   #include "user_interface.h"
@@ -30,7 +31,7 @@ void setup_wifi() {
   #endif
   //for Light sleep
   WiFi.mode(WIFI_STA);
-  wifi_set_sleep_type(LIGHT_SLEEP_T); 
+  //wifi_set_sleep_type(NONE_SLEEP_T); 
   
   WiFi.begin(ssid, password);
 

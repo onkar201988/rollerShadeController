@@ -10,8 +10,8 @@ const int ATN2Pin         = 15;
 const int BIN1Pin         = 16;
 const int BIN2Pin         = 14;
 
-const int upSwitchPin1    = 1;
-const int downSwitchPin1  = 3;
+const int upSwitchPin1    = 3;
+const int downSwitchPin1  = 1;
 const int upSwitchPin2    = 0;
 const int downSwitchPin2  = 2;
 
@@ -23,8 +23,8 @@ volatile int masterCountB          = 0;  // Holds the current position of motor 
 volatile int nextPositionCountA    = 0;  // Number of counts to Up or Down requested for A
 volatile int nextPositionCountB    = 0;  // Number of counts to Up or Down requested for B
 
-int maxStepsA             = 22000;  // Lower limit for motor A count
-int maxStepsB             = 22000;  // Lower limit for motor B count
+int maxStepsA             = 21500;  // Lower limit for motor A count
+int maxStepsB             = 21500;  // Lower limit for motor B count
 
 volatile bool isLimitReachedA = false;
 volatile bool isLimitReachedB = false;
@@ -52,6 +52,8 @@ volatile bool downButtonPressedFlagB = false;   // Flag to store when button is 
 
 const unsigned long longPressTime   = 1000; // Time for switch must be pressed
 
+volatile int blindPosition = 0;             // Holds the positions from 0 - 100
+
 //---------------------- External object declairation -------------------
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -65,8 +67,8 @@ enum masterState_E {
   SW_DOWN,
   IDEL_ST
 };
-volatile enum masterState_E masterStateA = CALIBRATION;
-volatile enum masterState_E masterStateB = CALIBRATION;
+volatile enum masterState_E masterStateA = IDEL_ST;
+volatile enum masterState_E masterStateB = IDEL_ST;
 
 enum calibrationState_E {
   INIT,
@@ -104,6 +106,23 @@ void setup() {
 #ifdef debug
   Serial.begin(115200);
 #endif
+
+  Serial.begin(115200);
+  EEPROM.begin(16);
+  EEPROM.get(0, blindPosition);
+  
+  if((0 < blindPosition) && (blindPosition <= 100))
+  {
+    // Previous value is valid no need to do anything
+  }
+  else
+  {
+    // previous value is wrong
+    blindPosition = 1;
+  }
+  
+  // Map the value from % to no. steps
+  int nextPositionCount = map(blindPosition, 0, 100, 0, maxStepsA);
 
   pinMode(limitSwAPin, INPUT);
   pinMode(limitSwAPin, INPUT_PULLUP);
@@ -150,6 +169,11 @@ void setup() {
   // setup connection with MQTT server 
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
+  reconnect();
+
+  masterCountA = nextPositionCount;
+  masterCountB = nextPositionCount;
+  sendShadeStatus();
 }
 
 //-------------------------- ISR functions --------------------------
@@ -173,6 +197,7 @@ void sensorA_ISR()
 
   if(0 == nextPositionCountA)
   {
+    brakeShadeA();
     masterStateA = IDEL_ST;
   }
 }
@@ -188,15 +213,16 @@ void sensorB_ISR()
   }
   else if(DOWN == motorDirectionB)
   {
-    masterCount+B+;
+    masterCountB++;
   }
   else
   {
     //Do nothing
   }
-  nextPositionCountB --;
+  
   if (0 == nextPositionCountB)
   {
+    brakeShadeB();
     masterStateB = IDEL_ST;
   }
 }
@@ -212,7 +238,7 @@ void limitSwA_ISR()
     
     stopShadeA();  // Hard stop motor in any case
     isLimitReachedA = true;
-    nextPositionCountA = 5;
+    nextPositionCountA = 3;
     shadeDownA();
     masterCountA = 0;
   }
@@ -233,7 +259,7 @@ void limitSwB_ISR()
     
     stopShadeB();  // Hard stop motor in any case
     isLimitReachedB = true;
-    nextPositionCountB = 5;
+    nextPositionCountB = 3;
     shadeDownB();
     masterCountB = 0;
   }
@@ -326,12 +352,20 @@ void shadeDownA()
 }
 
 //------------------------------------------------------------------------
+void brakeShadeA()
+{
+  digitalWrite(ATN1Pin, HIGH);
+  digitalWrite(ATN2Pin, HIGH);
+}
+
+//------------------------------------------------------------------------
 void stopShadeA()
 {
-  // Set motor direction
-  motorDirectionA = STOP;
   digitalWrite(ATN1Pin, LOW);
   digitalWrite(ATN2Pin, LOW);
+  
+  // Set motor direction
+  motorDirectionA = STOP;
 }
 
 //-------------------------- Motor B -------------------------------------
@@ -353,12 +387,20 @@ void shadeDownB()
 }
 
 //------------------------------------------------------------------------
+void brakeShadeB()
+{
+  digitalWrite(BIN1Pin, HIGH);
+  digitalWrite(BIN2Pin, HIGH);
+}
+
+//------------------------------------------------------------------------
 void stopShadeB()
 {
-  // Set motor direction
-  motorDirectionB = STOP;
   digitalWrite(BIN1Pin, LOW);
   digitalWrite(BIN2Pin, LOW);
+
+  // Set motor direction
+  motorDirectionB = STOP;
 }
 
 //----------------------- MQTT reconnect function --------------------------------
@@ -400,31 +442,46 @@ void callback(char* topic, byte* payload, unsigned int length)
   #endif
 
   payload[length] = '\0';                     // Make payload a string by NULL terminating it.
-  int blindPosition = atoi((char *)payload);  // Convert string array to int 
-  #ifdef debug
-    Serial.print("blindPosition int = ");
-    Serial.print(blindPosition);
-    Serial.println();
-  #endif
 
-  // Constrain the value if it is out of range
-  blindPosition = constrain(blindPosition, 0, 100);
+  if(strcmp((char *)payload , "STOP") == 0)
+  {
+    masterStateA = IDEL_ST;
+    masterStateB = IDEL_ST;
+  }
+  else
+  {
+    int blindPosition = atoi((char *)payload);  // Convert string array to int 
+    #ifdef debug
+      Serial.print("blindPosition int = ");
+      Serial.print(blindPosition);
+      Serial.println();
+    #endif
   
-  // Map the value from % to no. steps
-  int nextPositionCount = map(blindPosition, 0, 100, 0, maxStepsA);
+    // Constrain the value if it is out of range
+    blindPosition = constrain(blindPosition, 0, 100);
 
-  // Set state for Motor A
-  setNextPositionA(nextPositionCount);
-
-  // Set state for Motor B
-  setNextPositionB(nextPositionCount);
+    EEPROM.put(0, blindPosition);
+    EEPROM.commit();
+    
+    // Map the value from % to no. steps
+    int nextPositionCount = map(blindPosition, 0, 100, 0, maxStepsA);
+  
+    // Set state for Motor A
+    setNextPositionA(nextPositionCount);
+  
+    // Set state for Motor B
+    setNextPositionB(nextPositionCount);
+  }
 }
 
 //-----------------------------------------------------------------------------
 void sendShadeStatus()
 {
   // Send the current state of the blind in %
-  client.publish(mqtt_topic_state, String((int)(((float)masterCountA / (float)maxStepsA)*100)).c_str());
+  int blindPosition = (int)(((float)masterCountA / (float)maxStepsA)*100);
+  client.publish(mqtt_topic_state, String(blindPosition).c_str());
+  EEPROM.put(0, blindPosition);
+  EEPROM.commit();
 }
 
 //-----------------------------------------------------------------------------
@@ -600,6 +657,7 @@ void masterStateMachineA()
     case IDEL_ST:
       if(STOP != motorDirectionA)
       {
+        brakeShadeA();
         stopShadeA();
         #ifdef debug
           Serial.println("MasterStateA: IDEL_ST");
@@ -681,6 +739,7 @@ void masterStateMachineB()
     case IDEL_ST:
       if(STOP != motorDirectionB)
       {
+        brakeShadeB();
         stopShadeB();
         #ifdef debug
           Serial.println("MasterStateB: IDEL_ST");
@@ -714,18 +773,20 @@ void upSwitchPressedA()
   }
   else if(isUpSwPressed1 && ((millis() - upButtonPressedTimeA) > longPressTime))
   {
-    if(10 >= masterCountA)
-    {
-      stopShadeA();
-    }
-    else if(UP != motorDirectionA)
-    {
-      shadeUpA();
-    }
-    else
-    {
-      // Do nothing
-    }
+//    if(10 >= masterCountA)
+//    {
+//      stopShadeA();
+//    }
+//    else if(UP != motorDirectionA)
+//    {
+//      shadeUpA();
+//    }
+//    else
+//    {
+//      // Do nothing
+//    }
+//    
+    masterStateA = CALIBRATION;
   }
   else if(!isUpSwPressed1)
   {
@@ -776,14 +837,15 @@ void upSwitchPressedB()
   }
   else if(isUpSwPressed2 && ((millis() - upButtonPressedTimeB) > longPressTime))
   {
-    if(UP != motorDirectionB)
-    {
-      shadeUpB();
-    }
-    else
-    {
-      // Do nothing
-    }
+//    if(UP != motorDirectionB)
+//    {
+//      shadeUpB();
+//    }
+//    else
+//    {
+//      // Do nothing
+//    }
+    masterStateB = CALIBRATION;
   }
   else if(!isUpSwPressed2)
   {
@@ -826,17 +888,19 @@ void loop() {
   // Loop
   //-----------------------------
   masterStateMachineA();
-  //masterStateMachineB();
+  masterStateMachineB();
   //-----------------------------
 
   // --------------- end Application code ---------------------
   // Required!!!, this is to check for new MQTT updates from server
-  if((masterStateA != CALIBRATION) /*&& (masterStateB != CALIBRATION)*/)
+  if((masterStateA != CALIBRATION) && (masterStateB != CALIBRATION))
   {
     // if MQTT connection lost, reconnect
     if (!client.connected())
     {
+      stopShadeA();
       masterStateA = IDEL_ST;
+      stopShadeB();
       masterStateB = IDEL_ST;
       yield();
       reconnect();
@@ -846,5 +910,5 @@ void loop() {
   }
 
   // Fixed delay of 10 mSec
-  delay(10);
+  delay(50);
 }
